@@ -4,15 +4,14 @@
 TIMING:
   seq_len: 100  # 历史序列长度
   pred_len: 1   # 预测序列长度
-  d_model: 16   # 模型维度
+  d_model: 32   # 模型维度
   embed: 'timeF'  # 嵌入类型
   freq: 'h'     # 频率
   dropout: 0.1
-  e_layers: 4   # TimesNet层数
-  top_k: 4      # 周期数量
+  e_layers: 3   # TimesNet层数
+  top_k: 5      # 周期数量
   num_kernels: 6
-  d_ff: 32
-
+  d_ff: 64
 
 DATA:
   MAX_SAMPLE_INTERVAL: 200
