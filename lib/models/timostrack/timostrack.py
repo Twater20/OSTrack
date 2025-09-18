@@ -68,7 +68,7 @@ class TIMOSTrack(nn.Module):
         B, seq, C = y.shape
         y = y.view(B * seq, C, 1, 1)  # [B*seq, C, 1, 1]
         y = self.temporal_proj[3](y)  # ConvTranspose2d
-        # x: [B*seq, C', H, W] 例如 [B*seq, 768, 16, 16]
+        # x: [B*seq, C', H, W] 例如 [B*seq, d_model*2, 16, 16]
         C_out, H, W = y.shape[1:]
         y = y.view(B, seq, C_out, H, W)  # [B, seq, C', H, W]
 
