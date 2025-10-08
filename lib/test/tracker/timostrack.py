@@ -3,6 +3,7 @@ import math
 from lib.models.timostrack import build_timostrack
 from lib.test.tracker.basetracker import BaseTracker
 import torch
+import numpy as np
 
 from lib.test.tracker.vis_utils import gen_visualization
 from lib.test.utils.hann import hann2d
@@ -14,6 +15,8 @@ import os
 from lib.test.tracker.data_utils import Preprocessor
 from lib.utils.box_ops import clip_box
 from lib.utils.ce_utils import generate_mask_cond
+from filterpy.kalman import KalmanFilter
+
 
 
 class TIMOSTrack(BaseTracker):
@@ -31,6 +34,23 @@ class TIMOSTrack(BaseTracker):
         # motion constrain
         self.output_window = hann2d(torch.tensor([self.feat_sz, self.feat_sz]).long(), centered=True).cuda()
 
+        self.kf = KalmanFilter(dim_x=4, dim_z=2)  # state: [x, y, dx, dy]
+        self.kf.F = np.array([
+            [1, 0, 1, 0],
+            [0, 1, 0, 1],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+        self.kf.H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ])
+        self.kf.R *= 1.15  # measurement noise
+        self.kf.P[2:, 2:] *= 1.1  # state uncertainty
+        self.kf.P *= 5.
+        self.kf.Q[2:, 2:] *= 4.00  # process noise
+
+
         # for debug
         self.debug = params.debug
         self.use_visdom = params.debug
@@ -46,6 +66,7 @@ class TIMOSTrack(BaseTracker):
         # for save boxes from all queries
         self.save_all_boxes = params.save_all_boxes
         self.z_dict1 = {}
+        self.next = None
         
         # 历史跟踪序列缓存 - 保存前50帧的跟踪结果
         self.history_sequence = []
@@ -65,6 +86,9 @@ class TIMOSTrack(BaseTracker):
             template_bbox = self.transform_bbox_to_crop(info['init_bbox'], resize_factor,
                                                         template.tensors.device).squeeze(1)
             self.box_mask_z = generate_mask_cond(self.cfg, 1, template.tensors.device, template_bbox)
+
+        # Initialize Kalman Filter state
+        self.kf.x = np.array([info['init_bbox'][0], info['init_bbox'][1], 0, 0]).reshape(-1, 1)  # [x, y, dx, dy]
 
         # save states
         self.state = info['init_bbox']
@@ -87,7 +111,7 @@ class TIMOSTrack(BaseTracker):
     def track(self, image, info: dict = None):
         H, W, _ = image.shape
         self.frame_id += 1
-        x_patch_arr, resize_factor, x_amask_arr = sample_target(image, self.state, self.params.search_factor,
+        x_patch_arr, resize_factor, x_amask_arr = sample_target(image, self.next, self.params.search_factor,
                                                                 output_sz=self.params.search_size)  # (x1, y1, w, h)
         search = self.preprocessor.process(x_patch_arr, x_amask_arr)
 
@@ -106,9 +130,22 @@ class TIMOSTrack(BaseTracker):
         # Baseline: Take the mean of all pred boxes as the final result
         pred_box = (pred_boxes.mean(
             dim=0) * self.params.search_size / resize_factor).tolist()  # (cx, cy, w, h) [0,1]
-        # get the final box result
-        self.state = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
+        detected_box = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
         # self.seq = [self.state[0] / W, self.state[1] / H, self.state[2] / W, self.state[3] / H]
+
+        # get the final box result
+
+        # First: Kalman Filter prediction and update
+        self.kf.predict()
+        measurement = np.array([detected_box[0], detected_box[1]]).reshape(-1, 1)
+        self.kf.update(measurement)
+
+        # Second: Use detection result as final output
+        self.state = detected_box
+        # Finally: Use Kalman filtered state for next frame search
+        kalman_state = self.kf.x[:2].flatten()  # [x, y]
+        self.next = [kalman_state[0], kalman_state[1], detected_box[2],
+                     detected_box[3]]  # Use Kalman filtered position with detected size
 
         # 更新历史序列 - 滑动窗口机制
         # self.history_sequence.append(self.seq)
@@ -118,6 +155,24 @@ class TIMOSTrack(BaseTracker):
         
         # 更新gt_seq为TimesNet格式
         self.gt_seq = torch.tensor(self.history_sequence, dtype=torch.float32).unsqueeze(0).cuda()
+
+        self.update_threshold = 1.2
+        self.update_intervals = 200  # 290
+
+        if self.frame_id % self.update_intervals == 0 or self.frame_id <= 5:
+            # 触发模板采集
+            self.collecting_templates = True
+            self.templates_collected = 0
+            self.template_bank = []
+
+        # 如果处于模板采集状态，则采集当前帧模板
+        if self.collecting_templates:
+            self.collect_current_frame_template(image, initial_score=pred_score_map.max().item(),
+                                                hann_score=response.max().item())
+            # 检查是否完成采集
+            if self.templates_collected >= 20 or (self.templates_collected >= 5 and self.frame_id < 20):
+                self.select_and_update_template(initial_score_threshold=0.866, hann_score_threshold=0.851)
+                self.collecting_templates = False
         #
         # # Save detection and Kalman results
         # self.save_dir = "debug"
@@ -167,6 +222,53 @@ class TIMOSTrack(BaseTracker):
                     "all_boxes": all_boxes_save}
         else:
             return {"target_bbox": self.state}
+
+    def _is_near_border(self, box, H, W, threshold):
+        """判断框是否靠近图像边界"""
+        x, y, w, h = box
+        return (x < threshold or y < threshold or
+                (x+W/4 ) > (W - threshold) or (y+H/4 ) > (H - threshold))
+
+    def collect_current_frame_template(self, image, initial_score=0.0, hann_score=0.0):
+        """采集当前帧的模板"""
+        # 提取模板
+
+        z_patch_arr, _, z_amask_arr = sample_target(image, self.state, self.params.template_factor,
+                                                    output_sz=self.params.template_size)
+        # 存储模板和得分
+        self.template_bank.append((self.frame_id,z_patch_arr, initial_score, hann_score,z_amask_arr))
+        self.templates_collected += 1
+    def select_and_update_template(self,initial_score_threshold, hann_score_threshold):
+        """筛选并选择最优模板"""
+        # 筛选合格模板
+        valid_templates = [t for t in self.template_bank if t[2] > initial_score_threshold and t[3] > hann_score_threshold]
+        # 如果合格模板数量足够，选择最优模板
+        if len(valid_templates) >= 5 or (self.frame_id<=20 and len(valid_templates) >= 2):
+            # 按初始得分排序
+            sorted_templates = sorted(valid_templates, key=lambda x: x[2], reverse=True)
+            # 按Hann得分排序
+            hann_sorted = sorted(valid_templates, key=lambda x: x[3], reverse=True)
+
+            top_initial = sorted_templates[:3]
+            top_hann = hann_sorted[:3]
+
+            # 查找同时在两个列表中的模板
+            candidates = []
+            for t in top_initial:
+                if t in top_hann:
+                    # 计算综合得分（这里使用乘积，确保两者都高）
+                    combined_score = t[2] * t[3]
+                    candidates.append((t[0], t[1], t[2], t[3],t[4],combined_score))
+            #best_template = sorted_templates[0]
+            if candidates:
+                best_template = sorted(candidates, key=lambda x: x[5], reverse=True)[0]
+            else:
+                best_template = hann_sorted[0]
+            # 更新当前模板
+            self.z_patch_arr = best_template[1]  # 更新模板
+            z_amask_arr = best_template[4]  # 更新模板掩码
+            template = self.preprocessor.process(self.z_patch_arr, z_amask_arr)
+            self.z_dict1 = template
 
     def map_box_back(self, pred_box: list, resize_factor: float):
         cx_prev, cy_prev = self.state[0] + 0.5 * self.state[2], self.state[1] + 0.5 * self.state[3]
