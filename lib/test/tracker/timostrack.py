@@ -92,6 +92,7 @@ class TIMOSTrack(BaseTracker):
 
         # save states
         self.state = info['init_bbox']
+        self.next=self.state
         
         # 初始化历史序列 - 用初始边界框填充50帧
         initial_bbox = info['init_bbox']  # [x, y, w, h]
