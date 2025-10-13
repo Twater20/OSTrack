@@ -9,7 +9,7 @@ TIMING:
   freq: 'h'     # 频率
   dropout: 0.1
   e_layers: 3   # TimesNet层数
-  top_k: 5      # 周期数量
+  top_k: 4      # 周期数量
   num_kernels: 6
   d_ff: 64
 
@@ -77,7 +77,7 @@ TRAIN:
   DROP_PATH_RATE: 0.02
   CE_START_EPOCH: 20  # candidate elimination start epoch
   CE_WARM_EPOCH: 80  # candidate elimination warm up epoch
-  BATCH_SIZE: 96
+  BATCH_SIZE: 64
   EPOCH: 340
   GIOU_WEIGHT: 2.0
   L1_WEIGHT: 5.0
@@ -98,7 +98,7 @@ TRAIN:
   WEIGHT_DECAY: 0.0001
   AMP: False
 TEST:
-  EPOCH: 320
+  EPOCH: 340
   SEARCH_FACTOR: 4.0
   SEARCH_SIZE: 256
   TEMPLATE_FACTOR: 2.0
