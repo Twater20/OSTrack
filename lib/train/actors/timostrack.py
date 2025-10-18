@@ -52,6 +52,16 @@ class TIMOSTrackActor(BaseActor):
 
         gt_sequence_anno_backward=data['gt_sequence_anno_backward'].view(-1, *data['gt_sequence_anno_backward'].shape[2:])#历史帧序列的标签
         #gt_sequence_anno_forward=data['gt_sequence_anno_forward']
+        
+        # 获取数据集名称和实际序列长度（用于自适应TimesNet）
+        dataset_name = data.get('dataset', 'default')
+        if isinstance(dataset_name, (list, tuple)):
+            dataset_name = dataset_name[0] if len(dataset_name) > 0 else 'default'
+        if isinstance(dataset_name, str):
+            dataset_name = dataset_name.lower()
+        
+        # 计算实际序列长度（非零部分）
+        actual_seq_lens = self._compute_actual_sequence_lengths(gt_sequence_anno_backward)
 
         box_mask_z = None
         ce_keep_rate = None
@@ -74,9 +84,36 @@ class TIMOSTrackActor(BaseActor):
                             gt_sequence_anno_backward=gt_sequence_anno_backward,
                             ce_template_mask=box_mask_z,
                             ce_keep_rate=ce_keep_rate,
-                            return_last_attn=False)
+                            return_last_attn=False,
+                            dataset_name=dataset_name,
+                            actual_seq_lens=actual_seq_lens)
 
         return out_dict
+
+    def _compute_actual_sequence_lengths(self, gt_sequence_anno_backward):
+        """
+        计算每个样本的实际序列长度（非零部分）
+        Args:
+            gt_sequence_anno_backward: [B, seq_len, 4] 
+        Returns:
+            actual_seq_lens: [B] 每个样本的实际序列长度
+        """
+        B, seq_len, _ = gt_sequence_anno_backward.shape
+        actual_seq_lens = []
+        
+        for i in range(B):
+            # 找到非零bbox的数量
+            bbox_norms = torch.norm(gt_sequence_anno_backward[i], dim=1)  # [seq_len]
+            non_zero_count = (bbox_norms > 1e-6).sum().item()
+            
+            # 确保至少有最小长度
+            actual_len = max(non_zero_count, self.cfg.TIMING.get('min_seq_len', 10))
+            # 限制最大长度
+            actual_len = min(actual_len, self.cfg.TIMING.get('max_seq_len', 200))
+            
+            actual_seq_lens.append(actual_len)
+        
+        return torch.tensor(actual_seq_lens, device=gt_sequence_anno_backward.device)
 
     def compute_losses(self, pred_dict, gt_dict, return_status=True):
         # gt gaussian map
@@ -109,6 +146,8 @@ class TIMOSTrackActor(BaseActor):
         # compute timesnet loss
         timesnet_l1_loss = torch.tensor(0.0, device=l1_loss.device)
         timesnet_giou_loss = torch.tensor(0.0, device=l1_loss.device)
+        multi_head_loss = torch.tensor(0.0, device=l1_loss.device)
+        confidence_loss = torch.tensor(0.0, device=l1_loss.device)
         
         if 'timesnet_pred' in pred_dict and pred_dict['timesnet_pred'] is not None:
             # TimesNet预测的bbox: [B, pred_len, 4] 格式为(x, y, w, h)
@@ -141,13 +180,60 @@ class TIMOSTrackActor(BaseActor):
                 timesnet_giou_loss, _ = self.objective['timesnet_giou'](timesnet_pred_xyxy, gt_bbox_xyxy)
             except:
                 timesnet_giou_loss = torch.tensor(0.0, device=l1_loss.device)
+            
+            # 计算多头预测损失（如果使用自适应TimesNet）
+            if 'timesnet_all_predictions' in pred_dict and pred_dict['timesnet_all_predictions'] is not None:
+                all_predictions = pred_dict['timesnet_all_predictions']  # [B, num_heads, pred_len, 4]
+                selection_weights = pred_dict.get('timesnet_selection_weights', None)  # [B, num_heads]
+                
+                if all_predictions is not None and selection_weights is not None:
+                    B, num_heads, pred_len, _ = all_predictions.shape
+                    
+                    # 对每个预测头计算损失
+                    head_losses = []
+                    for h in range(num_heads):
+                        head_pred = all_predictions[:, h, -1, :]  # [B, 4] 取最后一个时间步
+                        head_pred_xyxy = box_xywh_to_xyxy(head_pred)
+                        
+                        try:
+                            head_l1 = self.objective['timesnet_l1'](head_pred_xyxy, gt_bbox_xyxy)
+                            head_giou, _ = self.objective['timesnet_giou'](head_pred_xyxy, gt_bbox_xyxy)
+                            head_loss = head_l1 + head_giou
+                        except:
+                            head_loss = torch.tensor(0.0, device=l1_loss.device)
+                        
+                        head_losses.append(head_loss)
+                    
+                    # 加权平均多头损失
+                    if head_losses:
+                        head_losses = torch.stack(head_losses, dim=0)  # [num_heads]
+                        # 使用选择权重加权损失
+                        weighted_head_losses = head_losses.unsqueeze(0) * selection_weights  # [B, num_heads]
+                        multi_head_loss = weighted_head_losses.sum(dim=1).mean()  # 平均batch损失
+            
+            # 计算置信度损失（如果有置信度预测）
+            if 'timesnet_confidence_scores' in pred_dict and pred_dict['timesnet_confidence_scores'] is not None:
+                confidence_scores = pred_dict['timesnet_confidence_scores']  # [B, pred_len, 1]
+                if confidence_scores is not None:
+                    # 使用IoU作为置信度目标
+                    try:
+                        _, iou_scores = self.objective['timesnet_giou'](timesnet_pred_xyxy, gt_bbox_xyxy)
+                        target_confidence = iou_scores.detach().unsqueeze(-1).unsqueeze(-1)  # [B, 1, 1]
+                        target_confidence = target_confidence.expand(-1, confidence_scores.size(1), -1)  # [B, pred_len, 1]
+                        
+                        # MSE损失用于置信度回归
+                        confidence_loss = F.mse_loss(confidence_scores, target_confidence)
+                    except:
+                        confidence_loss = torch.tensor(0.0, device=l1_loss.device)
         
         # weighted sum
         loss = (self.loss_weight['giou'] * giou_loss + 
                 self.loss_weight['l1'] * l1_loss + 
                 self.loss_weight['focal'] * location_loss +
                 self.loss_weight['timesnet_l1'] * timesnet_l1_loss +
-                self.loss_weight['timesnet_giou'] * timesnet_giou_loss)
+                self.loss_weight['timesnet_giou'] * timesnet_giou_loss +
+                self.loss_weight.get('multi_head', 0.1) * multi_head_loss +
+                self.loss_weight.get('confidence', 0.05) * confidence_loss)
         if return_status:
             # status for log
             mean_iou = iou.detach().mean()
@@ -157,6 +243,8 @@ class TIMOSTrackActor(BaseActor):
                       "Loss/location": location_loss.item(),
                       "Loss/timesnet_l1": timesnet_l1_loss.item(),
                       "Loss/timesnet_giou": timesnet_giou_loss.item(),
+                      "Loss/multi_head": multi_head_loss.item(),
+                      "Loss/confidence": confidence_loss.item(),
                       "IoU": mean_iou.item()}
             return loss, status
         else:
