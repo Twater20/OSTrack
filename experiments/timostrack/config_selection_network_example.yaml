@@ -1,0 +1,36 @@
+# TIMOSTrack with Selection Network Configuration Example
+
+MODEL:
+  TYPE: "TIMOSTrack"
+  BACKBONE:
+    TYPE: "vit_base_patch16_224_ce"
+    CE_LOC: [3, 6, 9]
+    CE_KEEP_RATIO: [0.7, 0.7, 0.7]
+  HEAD:
+    TYPE: "CENTER"
+  # 启用多候选框模式（可选）
+  MULTI_CANDIDATE: false  # 设置为true以启用多候选框模式
+
+TRAIN:
+  # 原有损失权重
+  GIOU_WEIGHT: 2.0
+  L1_WEIGHT: 5.0
+  
+  # 选择网络损失权重（替代原来的TimesNet损失）
+  SELECTION_WEIGHT: 0.2      # 选择网络损失权重（提高权重，因为它现在承担了TimesNet的监督任务）
+  MULTI_CANDIDATE_WEIGHT: 0.05  # 多候选框损失权重（仅在MULTI_CANDIDATE=true时生效）
+
+TIMING:
+  seq_len: 10        # 输入序列长度
+  pred_len: 5        # 预测序列长度  
+  d_model: 128       # TimesNet模型维度
+  d_ff: 256
+  top_k: 5
+  num_kernels: 6
+  
+# 其他配置保持不变...
+DATA:
+  SEARCH:
+    SIZE: 320
+  TEMPLATE:
+    SIZE: 128

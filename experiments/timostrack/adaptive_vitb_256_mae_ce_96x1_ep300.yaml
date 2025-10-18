@@ -1,0 +1,114 @@
+MODEL:
+  TYPE: timostrack
+  PRETRAIN_FILE: "mae_pretrain_vit_base.pth"
+  BACKBONE:
+    TYPE: vit_base_patch16_224_ce
+    STRIDE: 16
+    MID_PE: False
+    SEP_SEG: False
+    CAT_MODE: 'direct'
+    MERGE_LAYER: 0
+    ADD_CLS_TOKEN: False
+    CLS_TOKEN_USE_MODE: 'ignore'
+    CE_LOC: [3, 6, 9]
+    CE_KEEP_RATIO: [0.7, 0.7, 0.7]
+    CE_TEMPLATE_RANGE: 'ALL'  # choose between ALL, CTR_POINT, CTR_REC, GT_BOX
+  HEAD:
+    TYPE: "CENTER"
+    NUM_CHANNELS: 256
+  # 新增：启用自适应TimesNet
+  USE_ADAPTIVE_TIMESNET: True
+  MULTI_CANDIDATE: False
+
+TRAIN:
+  LR: 0.0001
+  WEIGHT_DECAY: 0.0001
+  EPOCH: 300
+  LR_DROP_EPOCH: 240
+  BATCH_SIZE: 16
+  NUM_WORKER: 8
+  OPTIMIZER: "ADAMW"
+  BACKBONE_MULTIPLIER: 0.1
+  GIOU_WEIGHT: 2.0
+  L1_WEIGHT: 5.0
+  FOCAL_WEIGHT: 1.0
+  # TimesNet相关损失权重
+  TIMESNET_L1_WEIGHT: 0.5
+  TIMESNET_GIOU_WEIGHT: 0.2
+  # 新增：多头预测和置信度损失权重
+  MULTI_HEAD_WEIGHT: 0.1
+  CONFIDENCE_WEIGHT: 0.05
+  
+  FREEZE_LAYERS: [0, ]
+  PRINT_INTERVAL: 50
+  VAL_EPOCH_INTERVAL: 20
+  GRAD_CLIP_NORM: 0.1
+  AMP: False
+  CE_START_EPOCH: 20
+  CE_WARM_EPOCH: 80
+  DROP_PATH_RATE: 0.1
+  SCHEDULER:
+    TYPE: "step"
+    DECAY_RATE: 0.1
+
+DATA:
+  SAMPLER_MODE: "causal"
+  MEAN: [0.485, 0.456, 0.406]
+  STD: [0.229, 0.224, 0.225]
+  MAX_SAMPLE_INTERVAL: 200
+  TRAIN:
+    DATASETS_NAME: ["LASOT", "GOT10K_vottrain"]
+    DATASETS_RATIO: [1, 1]
+    SAMPLE_PER_EPOCH: 60000
+  VAL:
+    DATASETS_NAME: ["GOT10K_votval"]
+    DATASETS_RATIO: [1]
+    SAMPLE_PER_EPOCH: 10000
+  SEARCH:
+    SIZE: 320
+    FACTOR: 5.0
+    CENTER_JITTER: 4.5
+    SCALE_JITTER: 0.5
+    NUMBER: 1
+  TEMPLATE:
+    NUMBER: 1
+    SIZE: 128
+    FACTOR: 2.0
+    CENTER_JITTER: 0
+    SCALE_JITTER: 0
+
+TEST:
+  TEMPLATE_FACTOR: 2.0
+  TEMPLATE_SIZE: 128
+  SEARCH_FACTOR: 5.0
+  SEARCH_SIZE: 320
+  EPOCH: 300
+
+# 自适应TimesNet配置
+TIMING:
+  # 原始参数（保持向后兼容）
+  seq_len: 50
+  pred_len: 5
+  d_model: 32
+  d_ff: 128
+  e_layers: 3
+  top_k: 3
+  num_kernels: 6
+  embed: 'timeF'
+  freq: 'h'
+  dropout: 0.1
+  predict_velocity: False
+  predict_confidence: False
+  
+  # 新增：自适应参数
+  max_seq_len: 200
+  min_seq_len: 10
+  num_prediction_heads: 4
+  dataset_adaptive: True
+  
+  # 数据集特定配置
+  dataset_seq_lens:
+    lasot: 100
+    got10k: 50
+    trackingnet: 80
+    default: 60
