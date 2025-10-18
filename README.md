@@ -144,8 +144,9 @@ Some testing examples:
 - LaSOT or other off-line evaluated benchmarks (modify `--dataset` correspondingly)
 
 ```
-python tracking/test.py ostrack vitb_384_mae_ce_32x4_ep300 --dataset lasot --threads 16 --num_gpus 4
+python tracking/test.py ostrack vitb_256_mae_ce_64x2_ep300 --dataset lasot --threads 16 --num_gpus 4
 python tracking/test.py ostrack vitb_256_mae_ce_96x1_ep300 --dataset lasot --threads 0 --num_gpus 1 --debug 1
+python tracking/test.py ostrack vitb_256_mae_ce_64x2_ep300 --dataset lasot --threads 20 --num_gpus 2
 python tracking/test.py cvtostrack cvt13_256_mae_ce_96x1_ep300 --dataset lasot --threads 16 --num_gpus 1
 python tracking/test.py roistrack vitb_256_mae_ce_96x1_ep300 --dataset lasot --threads 0 --num_gpus 1
 python tracking/test.py timostrack vitb_256_mae_ce_96x1_ep300 --dataset lasot --threads 16 --num_gpus 1
