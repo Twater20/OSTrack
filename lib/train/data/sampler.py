@@ -238,11 +238,17 @@ class TrackingSampler(torch.utils.data.Dataset):
                     search_masks = search_anno['mask'] if 'mask' in search_anno else [torch.zeros(
                         (H, W))] * self.num_search_frames
 
-                # Sample GT sequence for TimesNet training
+                # Sample GT sequence for TimesNet training with adaptive length
+                dataset_name = dataset.get_name().lower()
+                adaptive_backward_len = self._get_adaptive_sequence_length(dataset_name, 'backward')
+                adaptive_forward_len = self._get_adaptive_sequence_length(dataset_name, 'forward')
+                
                 gt_sequence_anno_backward, _ = self.sample_gt_sequence(
-                    dataset, seq_id, template_frame_ids, search_frame_ids, seq_info_dict, min_interval=50, direction='backward', future_steps=50)
+                    dataset, seq_id, template_frame_ids, search_frame_ids, seq_info_dict, 
+                    min_interval=adaptive_backward_len, direction='backward', future_steps=adaptive_backward_len)
                 gt_sequence_anno_forward, _ = self.sample_gt_sequence(
-                    dataset, seq_id, template_frame_ids, search_frame_ids, seq_info_dict, min_interval=50, direction='forward', future_steps=30)
+                    dataset, seq_id, template_frame_ids, search_frame_ids, seq_info_dict, 
+                    min_interval=adaptive_forward_len, direction='forward', future_steps=adaptive_forward_len)
 
                 data = TensorDict({'template_images': template_frames,
                                    'template_anno': template_anno['bbox'],
@@ -255,7 +261,9 @@ class TrackingSampler(torch.utils.data.Dataset):
                                    'gt_sequence_anno_forward': gt_sequence_anno_forward,
                                    #'gt_sequence_masks': gt_sequence_masks,
                                    'dataset': dataset.get_name(),
-                                   'test_class': meta_obj_test.get('object_class_name')})
+                                   'test_class': meta_obj_test.get('object_class_name'),
+                                   'actual_backward_len': adaptive_backward_len,
+                                   'actual_forward_len': adaptive_forward_len})
 
                 # make data augmentation
                 data = self.processing(data)
@@ -267,6 +275,31 @@ class TrackingSampler(torch.utils.data.Dataset):
                 valid = False
 
         return data
+
+    def _get_adaptive_sequence_length(self, dataset_name, direction='backward'):
+        """
+        根据数据集名称和方向获取自适应序列长度
+        Args:
+            dataset_name: 数据集名称
+            direction: 'backward' 或 'forward'
+        Returns:
+            适应的序列长度
+        """
+        # 数据集特定的序列长度配置
+        dataset_configs = {
+            'lasot': {'backward': 100, 'forward': 10},
+            'got10k': {'backward': 50, 'forward': 5}, 
+            'trackingnet': {'backward': 80, 'forward': 8},
+            'coco': {'backward': 30, 'forward': 3},
+            'default': {'backward': 60, 'forward': 6}
+        }
+        
+        # 提取数据集名称的关键词
+        for key in dataset_configs.keys():
+            if key in dataset_name.lower():
+                return dataset_configs[key][direction]
+        
+        return dataset_configs['default'][direction]
 
     def get_center_box(self, H, W, ratio=1/8):
         cx, cy, w, h = W/2, H/2, W * ratio, H * ratio

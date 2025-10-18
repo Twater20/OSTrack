@@ -106,6 +106,7 @@ cfg.TEST.SEARCH_SIZE = 320
 cfg.TEST.EPOCH = 500
 
 cfg.TIMING = edict()
+# 原始TimesNet参数（保持向后兼容）
 cfg.TIMING.seq_len = 50,  # Length of historical sequence
 cfg.TIMING.pred_len = 2,  # Number of frames to predict
 cfg.TIMING.d_model = 16,  # Hidden dimension
@@ -118,6 +119,19 @@ cfg.TIMING.freq = 'h',  # Frequency
 cfg.TIMING.dropout = 0.1,  # Dropout rate
 cfg.TIMING.predict_velocity = False,  # Whether to predict velocity
 cfg.TIMING.predict_confidence = False # Whether to predict confidence
+
+# 新增：自适应TimesNet参数
+cfg.TIMING.max_seq_len = 200  # 最大序列长度
+cfg.TIMING.min_seq_len = 10   # 最小序列长度
+cfg.TIMING.num_prediction_heads = 4  # 多头预测数量
+cfg.TIMING.dataset_adaptive = True   # 是否启用数据集自适应
+
+# 数据集特定的序列长度配置
+cfg.TIMING.dataset_seq_lens = edict()
+cfg.TIMING.dataset_seq_lens.lasot = 100      # LaSOT数据集推荐序列长度
+cfg.TIMING.dataset_seq_lens.got10k = 50      # GOT10K数据集推荐序列长度
+cfg.TIMING.dataset_seq_lens.trackingnet = 80 # TrackingNet数据集推荐序列长度
+cfg.TIMING.dataset_seq_lens.default = 60     # 默认序列长度
 
 
 
